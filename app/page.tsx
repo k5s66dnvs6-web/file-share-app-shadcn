@@ -1,59 +1,79 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Upload, 
   File, 
   Share2, 
-  Download, 
   Trash2, 
+  Download, 
   CheckCircle2, 
-  X, 
   FileText, 
-  Image as ImageIcon, 
-  Plus
+  X, 
+  Clock, 
+  HardDrive,
+  Copy,
+  Info
 } from 'lucide-react';
 
-interface LocalFile {
+interface StoredFile {
   id: string;
   name: string;
-  size: number;
+  size: string;
   type: string;
-  url: string;
   date: string;
-  progress: number;
-  status: 'uploading' | 'completed';
+  data: string; // Base64
 }
 
 export default function Home() {
-  const [files, setFiles] = useState<LocalFile[]>([]);
-  const [dragActive, setDragActive] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [files, setFiles] = useState<StoredFile[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-hide toast
+  // Load files from localStorage on mount
   useEffect(() => {
-    if (toast) {
-      const timer = setTimeout(() => setToast(null), 3000);
-      return () => clearTimeout(timer);
+    const saved = localStorage.getItem('file-share-data');
+    if (saved) {
+      try {
+        setFiles(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to load files", e);
+      }
     }
-  }, [toast]);
 
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    // Check for shared file in URL hash
+    const handleHashChange = () => {
+      const hash = window.location.hash;
+      if (hash.startsWith('#file=')) {
+        const fileId = hash.replace('#file=', '');
+        const savedFiles = JSON.parse(localStorage.getItem('file-share-data') || '[]');
+        const sharedFile = savedFiles.find((f: StoredFile) => f.id === fileId);
+        if (sharedFile) {
+          showToast(`Viewing shared file: ${sharedFile.name}`, 'info');
+        } else {
+          showToast("Shared file not found in your local storage.", 'error');
+        }
+      }
+    };
+
+    handleHashChange();
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  // Save to localStorage whenever files change
+  useEffect(() => {
+    localStorage.setItem('file-share-data', JSON.stringify(files));
+  }, [files]);
+
+  const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
   };
 
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
-  };
-
-  const formatFileSize = (bytes: number) => {
+  const formatSize = (bytes: number) => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
@@ -61,247 +81,257 @@ export default function Home() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const processFile = (file: File) => {
-    const id = Math.random().toString(36).substring(7);
-    const newFile: LocalFile = {
-      id,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      url: URL.createObjectURL(file),
-      date: new Date().toLocaleDateString('vi-VN', { 
-        day: '2-digit', 
-        month: '2-digit', 
-        year: 'numeric' 
-      }),
-      progress: 0,
-      status: 'uploading'
-    };
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = error => reject(error);
+    });
+  };
 
-    setFiles(prev => [newFile, ...prev]);
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement> | React.DragEvent) => {
+    let uploadedFiles: File[] = [];
+    
+    if ('files' in e.target && (e.target as HTMLInputElement).files) {
+      uploadedFiles = Array.from((e.target as HTMLInputElement).files || []);
+    } else if ('dataTransfer' in e && (e as React.DragEvent).dataTransfer.files) {
+      e.preventDefault();
+      uploadedFiles = Array.from((e as React.DragEvent).dataTransfer.files);
+    }
 
-    // Simulate upload progress
-    let currentProgress = 0;
+    if (uploadedFiles.length === 0) return;
+
+    setIsUploading(true);
+    setUploadProgress(0);
+
+    // Simulate progress
     const interval = setInterval(() => {
-      currentProgress += Math.random() * 30;
-      if (currentProgress >= 100) {
-        currentProgress = 100;
-        clearInterval(interval);
-        setFiles(prev => prev.map(f => 
-          f.id === id ? { ...f, progress: 100, status: 'completed' } : f
-        ));
-        showToast(`Đã tải lên: ${file.name}`);
-      } else {
-        setFiles(prev => prev.map(f => 
-          f.id === id ? { ...f, progress: currentProgress } : f
-        ));
+      setUploadProgress(prev => {
+        if (prev >= 95) {
+          clearInterval(interval);
+          return 95;
+        }
+        return prev + 5;
+      });
+    }, 100);
+
+    try {
+      const newStoredFiles: StoredFile[] = [];
+      for (const file of uploadedFiles) {
+        const base64 = await fileToBase64(file);
+        newStoredFiles.push({
+          id: Math.random().toString(36).substring(2, 11),
+          name: file.name,
+          size: formatSize(file.size),
+          type: file.type,
+          date: new Date().toLocaleDateString('vi-VN'),
+          data: base64
+        });
       }
-    }, 400);
-  };
 
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      Array.from(e.dataTransfer.files).forEach(processFile);
+      setFiles(prev => [...newStoredFiles, ...prev]);
+      setUploadProgress(100);
+      showToast(`Đã tải lên ${uploadedFiles.length} tệp thành công!`);
+    } catch (err) {
+      showToast("Lỗi khi tải tệp lên. Vui lòng thử lại.", 'error');
+    } finally {
+      clearInterval(interval);
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(0);
+      }, 500);
     }
   };
 
-  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      Array.from(e.target.files).forEach(processFile);
-    }
+  const downloadFile = (file: StoredFile) => {
+    const link = document.createElement('a');
+    link.href = file.data;
+    link.download = file.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast(`Đang tải xuống: ${file.name}`);
+  };
+
+  const copyShareLink = (fileId: string) => {
+    const url = `${window.location.origin}${window.location.pathname}#file=${fileId}`;
+    navigator.clipboard.writeText(url);
+    showToast("Đã sao chép liên kết vào bộ nhớ tạm!");
   };
 
   const deleteFile = (id: string) => {
-    const fileToDelete = files.find(f => f.id === id);
-    if (fileToDelete) {
-      URL.revokeObjectURL(fileToDelete.url);
-      setFiles(prev => prev.filter(f => f.id !== id));
-      showToast("Đã xóa tệp tin");
-    }
-  };
-
-  const copyLink = (id: string) => {
-    const url = `${window.location.origin}/share/${id}`;
-    navigator.clipboard.writeText(url);
-    showToast("Đã sao chép liên kết chia sẻ");
-  };
-
-  const getFileIcon = (type: string) => {
-    if (type.includes('image')) return <ImageIcon className="w-4 h-4 text-pink-500" />;
-    return <FileText className="w-4 h-4 text-blue-500" />;
+    setFiles(prev => prev.filter(f => f.id !== id));
+    showToast("Đã xóa tệp.", 'info');
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans selection:bg-blue-100 p-4 md:p-8">
-      {/* Toast Notification */}
-      {toast && (
-        <div className="fixed top-4 right-4 z-50 animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg ${
-            toast.type === 'success' ? 'bg-white border-emerald-100 text-emerald-900' : 'bg-white border-red-100 text-red-900'
-          }`}>
-            <CheckCircle2 className={`w-5 h-5 ${toast.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`} />
-            <span className="text-sm font-medium">{toast.message}</span>
-            <button onClick={() => setToast(null)} className="ml-2 text-slate-400 hover:text-slate-600">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
+    <div className="min-h-screen bg-[#fafafa] text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-700">
+      {/* Background Decor */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -top-[10%] -left-[10%] w-[40%] h-[40%] rounded-full bg-indigo-50/50 blur-[120px]" />
+        <div className="absolute -bottom-[10%] -right-[10%] w-[40%] h-[40%] rounded-full bg-purple-50/50 blur-[120px]" />
+      </div>
 
-      <div className="max-w-5xl mx-auto space-y-8">
+      {/* Main Content */}
+      <main className="relative max-w-5xl mx-auto px-6 py-12 md:py-20">
+        
         {/* Header */}
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight text-slate-900">Chia sẻ tệp tin</h1>
-            <p className="text-slate-500 mt-1">Tải lên và quản lý tệp tin của bạn một cách bảo mật.</p>
+        <header className="flex flex-col items-center mb-16 text-center space-y-4">
+          <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-white border border-slate-200 shadow-sm transition-transform hover:scale-105 duration-300">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+            </span>
+            <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500">Local Persistence Active</span>
           </div>
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-all shadow-sm shadow-blue-200 active:scale-95"
-          >
-            <Plus className="w-4 h-4" />
-            Tải lên mới
-          </button>
+          <h1 className="text-5xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-slate-900 via-indigo-900 to-slate-900">
+            Lưu Trữ Tệp Tin
+          </h1>
+          <p className="text-lg text-slate-500 max-w-lg">
+            Tải lên, quản lý và chia sẻ tệp tin của bạn. <br/>
+            <span className="text-sm italic font-medium text-amber-600 flex items-center justify-center mt-2">
+              <Info className="w-3 h-3 mr-1" /> Lưu ý: Tệp được lưu trực tiếp trong trình duyệt của bạn.
+            </span>
+          </p>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Upload Area */}
-          <div className="lg:col-span-4 space-y-4">
-            <div
-              onDragEnter={handleDrag}
-              onDragLeave={handleDrag}
-              onDragOver={handleDrag}
-              onDrop={onDrop}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          
+          {/* Upload Section */}
+          <div className="lg:col-span-4 space-y-6">
+            <div 
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleFileUpload}
               onClick={() => fileInputRef.current?.click()}
-              className={`relative group cursor-pointer border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center transition-all h-[320px] ${
-                dragActive 
-                ? 'border-blue-500 bg-blue-50/50 scale-[1.02]' 
-                : 'border-slate-200 bg-white hover:border-blue-400 hover:bg-slate-50/50'
+              className={`group relative bg-white border-2 border-dashed rounded-3xl p-10 flex flex-col items-center justify-center cursor-pointer transition-all duration-500 ${
+                isUploading 
+                ? 'border-indigo-400 bg-indigo-50/30' 
+                : 'border-slate-200 hover:border-indigo-400 hover:bg-slate-50/50 hover:shadow-2xl hover:shadow-indigo-100/50'
               }`}
             >
               <input 
-                ref={fileInputRef}
                 type="file" 
-                multiple 
-                onChange={onFileChange}
+                ref={fileInputRef} 
+                onChange={handleFileUpload} 
                 className="hidden" 
+                multiple
               />
               
-              <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                <Upload className="w-8 h-8 text-blue-600" />
+              <div className={`p-4 rounded-2xl mb-4 transition-all duration-500 ${
+                isUploading ? 'bg-indigo-500 text-white animate-pulse' : 'bg-slate-100 text-slate-400 group-hover:bg-indigo-100 group-hover:text-indigo-600 group-hover:rotate-6'
+              }`}>
+                <Upload className="w-8 h-8" />
               </div>
               
-              <div className="text-center space-y-2">
-                <p className="text-base font-semibold text-slate-900">
-                  {dragActive ? 'Thả tệp vào đây' : 'Kéo thả tệp tin'}
-                </p>
-                <p className="text-sm text-slate-500 px-4">
-                  Hoặc nhấn để chọn tệp từ máy tính. Hỗ trợ mọi định dạng.
-                </p>
-              </div>
-
-              {dragActive && (
-                <div className="absolute inset-0 bg-blue-500/5 rounded-2xl pointer-events-none" />
+              <p className="text-base font-semibold text-slate-800">
+                {isUploading ? 'Đang tải lên...' : 'Chọn hoặc thả tệp'}
+              </p>
+              <p className="text-xs text-slate-400 mt-2">Dung lượng tối đa 5MB/tệp</p>
+              
+              {isUploading && (
+                <div className="absolute bottom-0 left-0 right-0 h-1.5 bg-slate-100 rounded-b-3xl overflow-hidden">
+                  <div 
+                    className="h-full bg-indigo-500 transition-all duration-300 ease-out"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
               )}
             </div>
 
-            <div className="p-4 bg-blue-50/50 rounded-xl border border-blue-100">
-              <div className="flex items-start gap-3">
-                <CheckCircle2 className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <p className="text-xs font-semibold text-blue-900">Lưu trữ tạm thời</p>
-                  <p className="text-[11px] text-blue-700 leading-relaxed">
-                    Tệp tin của bạn được lưu trữ trong bộ nhớ trình duyệt và sẽ tự động biến mất khi bạn đóng tab.
-                  </p>
+            {/* Storage Info Card */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm">
+              <h3 className="text-sm font-bold flex items-center text-slate-800 mb-4">
+                <HardDrive className="w-4 h-4 mr-2" /> Trình trạng lưu trữ
+              </h3>
+              <div className="space-y-4">
+                <div className="flex justify-between text-xs font-medium">
+                  <span className="text-slate-500">Browser Storage</span>
+                  <span className="text-indigo-600">{files.length} tệp</span>
                 </div>
+                <div className="h-2 bg-slate-50 rounded-full overflow-hidden border border-slate-100">
+                  <div 
+                    className="h-full bg-indigo-400"
+                    style={{ width: `${Math.min(files.length * 10, 100)}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  Vì đây là ứng dụng tĩnh, dữ liệu của bạn được lưu trong <b>LocalStorage</b>. 
+                  Nếu bạn xóa lịch sử duyệt web, các tệp này sẽ biến mất.
+                </p>
               </div>
             </div>
           </div>
 
-          {/* Files List */}
-          <div className="lg:col-span-8 space-y-4">
-            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-slate-900 uppercase tracking-wider">Tệp tin gần đây</h3>
-                <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-[10px] font-bold rounded-full">
-                  {files.length} TỆP
-                </span>
+          {/* Files List Section */}
+          <div className="lg:col-span-8">
+            <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl shadow-slate-200/40 overflow-hidden">
+              <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-white rounded-xl shadow-sm border border-slate-200/60">
+                    <Clock className="w-4 h-4 text-indigo-500" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-900">Tệp tin gần đây</h2>
+                    <p className="text-[10px] uppercase font-bold tracking-widest text-slate-400">Manage your local drive</p>
+                  </div>
+                </div>
+                <div className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full border border-indigo-100">
+                  {files.length} Total
+                </div>
               </div>
 
-              <div className="divide-y divide-slate-50 min-h-[400px]">
+              <div className="divide-y divide-slate-50">
                 {files.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-24 text-center">
-                    <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center mb-4">
-                      <File className="w-6 h-6 text-slate-300" />
-                    </div>
-                    <p className="text-sm text-slate-500">Chưa có tệp tin nào được tải lên</p>
-                    <p className="text-xs text-slate-400 mt-1">Các tệp bạn tải lên sẽ xuất hiện tại đây</p>
+                  <div className="py-20 flex flex-col items-center justify-center opacity-40">
+                    <FileText className="w-12 h-12 mb-4 text-slate-300" />
+                    <p className="text-sm font-medium">Danh sách tệp trống</p>
                   </div>
                 ) : (
                   files.map((file) => (
-                    <div key={file.id} className="p-4 hover:bg-slate-50/50 transition-colors group">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-lg border border-slate-100 bg-white flex items-center justify-center shrink-0 shadow-sm">
-                          {getFileIcon(file.type)}
-                        </div>
-                        
-                        <div className="flex-1 min-w-0 space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium text-slate-900 truncate">{file.name}</p>
-                            <span className="text-[11px] text-slate-400 whitespace-nowrap">{file.date}</span>
+                    <div key={file.id} className="group p-6 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-indigo-50/30 transition-colors">
+                      <div className="flex items-center space-x-4 mb-4 sm:mb-0">
+                        <div className="relative">
+                          <div className="p-3 bg-white rounded-2xl shadow-sm border border-slate-200/60 group-hover:border-indigo-200 transition-colors">
+                            <File className="w-6 h-6 text-indigo-500" />
                           </div>
-                          
-                          <div className="flex items-center gap-3">
-                            <span className="text-xs text-slate-500">{formatFileSize(file.size)}</span>
-                            <span className="text-[10px] text-slate-300">•</span>
-                            <span className={`text-[10px] font-bold uppercase tracking-tight ${
-                              file.status === 'completed' ? 'text-emerald-600' : 'text-blue-600'
-                            }`}>
-                              {file.status === 'completed' ? 'Hoàn thành' : `Đang tải ${Math.round(file.progress)}%`}
-                            </span>
+                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white flex items-center justify-center">
+                            <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
                           </div>
-
-                          {file.status === 'uploading' && (
-                            <div className="w-full h-1 bg-slate-100 rounded-full mt-2 overflow-hidden">
-                              <div 
-                                className="h-full bg-blue-500 transition-all duration-300 ease-out" 
-                                style={{ width: `${file.progress}%` }}
-                              />
-                            </div>
-                          )}
                         </div>
-
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {file.status === 'completed' && (
-                            <>
-                              <a 
-                                href={file.url} 
-                                download={file.name}
-                                className="p-2 hover:bg-white hover:text-blue-600 text-slate-400 rounded-lg transition-all border border-transparent hover:border-slate-100"
-                                title="Tải về"
-                              >
-                                <Download className="w-4 h-4" />
-                              </a>
-                              <button 
-                                onClick={() => copyLink(file.id)}
-                                className="p-2 hover:bg-white hover:text-blue-600 text-slate-400 rounded-lg transition-all border border-transparent hover:border-slate-100"
-                                title="Sao chép liên kết"
-                              >
-                                <Share2 className="w-4 h-4" />
-                              </button>
-                            </>
-                          )}
-                          <button 
-                            onClick={() => deleteFile(file.id)}
-                            className="p-2 hover:bg-white hover:text-red-600 text-slate-400 rounded-lg transition-all border border-transparent hover:border-slate-100"
-                            title="Xóa"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-900 truncate max-w-[200px] md:max-w-xs">{file.name}</h3>
+                          <p className="text-[11px] font-medium text-slate-400 flex items-center">
+                            {file.size} <span className="mx-1.5 text-slate-300">•</span> {file.date}
+                          </p>
                         </div>
+                      </div>
+                      
+                      <div className="flex items-center space-x-2">
+                        <button 
+                          onClick={() => downloadFile(file)}
+                          className="flex-1 sm:flex-none inline-flex items-center justify-center p-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 hover:text-indigo-600 hover:border-indigo-200 hover:bg-indigo-50 shadow-sm transition-all active:scale-95 group/btn"
+                          title="Tải về"
+                        >
+                          <Download className="w-4 h-4" />
+                          <span className="ml-2 text-xs font-bold sm:hidden">Tải về</span>
+                        </button>
+                        <button 
+                          onClick={() => copyShareLink(file.id)}
+                          className="flex-1 sm:flex-none inline-flex items-center justify-center p-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 hover:text-indigo-600 hover:border-indigo-200 hover:bg-indigo-50 shadow-sm transition-all active:scale-95 group/btn"
+                          title="Sao chép liên kết"
+                        >
+                          <Share2 className="w-4 h-4" />
+                          <span className="ml-2 text-xs font-bold sm:hidden">Chia sẻ</span>
+                        </button>
+                        <button 
+                          onClick={() => deleteFile(file.id)}
+                          className="flex-1 sm:flex-none inline-flex items-center justify-center p-2.5 bg-white border border-slate-200 rounded-xl text-slate-400 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 shadow-sm transition-all active:scale-95 group/btn"
+                          title="Xóa"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span className="ml-2 text-xs font-bold sm:hidden">Xóa</span>
+                        </button>
                       </div>
                     </div>
                   ))
@@ -310,13 +340,32 @@ export default function Home() {
             </div>
           </div>
         </div>
-      </div>
-      
-      <footer className="mt-12 text-center">
-        <p className="text-[11px] font-medium text-slate-400 uppercase tracking-widest">
-          Phát triển bởi <span className="text-slate-900">Poke Engine</span> • 2026
-        </p>
+      </main>
+
+      {/* Footer Branding */}
+      <footer className="mt-12 mb-12 text-center opacity-30">
+        <div className="flex items-center justify-center space-x-2 grayscale">
+          <HardDrive className="w-4 h-4" />
+          <span className="text-[10px] font-bold uppercase tracking-[0.2em]">Next.js Client-Side Virtual Drive</span>
+        </div>
       </footer>
+
+      {/* Modern Custom Toast */}
+      {toast && (
+        <div className="fixed bottom-8 right-8 z-50 animate-in slide-in-from-right-10 fade-in duration-500">
+          <div className={`relative px-6 py-4 rounded-3xl shadow-2xl flex items-center space-x-4 border ${
+            toast.type === 'error' ? 'bg-white border-rose-100 text-rose-600' : 
+            toast.type === 'info' ? 'bg-white border-indigo-100 text-indigo-600' :
+            'bg-indigo-600 border-indigo-400 text-white'
+          }`}>
+            {toast.type === 'error' ? <X className="w-5 h-5" /> : <CheckCircle2 className="w-5 h-5" />}
+            <p className="text-sm font-bold">{toast.message}</p>
+            <button onClick={() => setToast(null)} className="ml-4 opacity-50 hover:opacity-100 transition-opacity">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
