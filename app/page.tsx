@@ -3,8 +3,14 @@
 import React, { useState } from 'react';
 import { Upload, File, Share2, CheckCircle2 } from 'lucide-react';
 
+interface SharedFile {
+  name: string;
+  size: string;
+  date: string;
+}
+
 export default function Home() {
-  const [files, setFiles] = useState([]);
+  const [files, setFiles] = useState<SharedFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
 
   const handleUpload = () => {
